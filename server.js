@@ -4,51 +4,56 @@ const cors = require('cors')
 const mongoose = require('mongoose')
 const Problem = require('./models/Problem')
 const authRoutes = require('./routes/auth')
+const authMiddleware = require('./middleware/auth')
 
 const app = express()
 
 app.use(cors())
 app.use(express.json())
-app.use('/api/auth', authRoutes)
 
- mongoose.connect(process.env.MONGO_URI)
+mongoose.connect(process.env.MONGO_URI)
   .then(() => console.log('MongoDB connected'))
   .catch((err) => console.error('MongoDB connection error:', err))
+
+app.use('/api/auth', authRoutes)
 
 app.get('/', (req, res) => {
   res.send('CodeTrack API is running')
 })
 
-// GET all problems
+// All routes below this line require a valid token
+app.use('/api/problems', authMiddleware)
+
 app.get('/api/problems', async (req, res) => {
-  const problems = await Problem.find()
+  const problems = await Problem.find({ userId: req.userId })
   res.json(problems)
 })
 
-// POST a new problem
 app.post('/api/problems', async (req, res) => {
-  const newProblem = new Problem(req.body)
+  const newProblem = new Problem({ ...req.body, userId: req.userId })
   const saved = await newProblem.save()
   res.status(201).json(saved)
 })
 
-// GET one problem by id
 app.get('/api/problems/:id', async (req, res) => {
-  const problem = await Problem.findById(req.params.id)
+  const problem = await Problem.findOne({ _id: req.params.id, userId: req.userId })
   if (!problem) return res.status(404).json({ message: "Problem not found" })
   res.json(problem)
 })
 
-// PUT (update) a problem
 app.put('/api/problems/:id', async (req, res) => {
-  const updated = await Problem.findByIdAndUpdate(req.params.id, req.body, { returnDocument: 'after' })
+  const updated = await Problem.findOneAndUpdate(
+    { _id: req.params.id, userId: req.userId },
+    req.body,
+    { returnDocument: 'after' }
+  )
   if (!updated) return res.status(404).json({ message: "Problem not found" })
   res.json(updated)
 })
 
-// DELETE a problem
 app.delete('/api/problems/:id', async (req, res) => {
-  await Problem.findByIdAndDelete(req.params.id)
+  const deleted = await Problem.findOneAndDelete({ _id: req.params.id, userId: req.userId })
+  if (!deleted) return res.status(404).json({ message: "Problem not found" })
   res.status(204).send()
 })
 

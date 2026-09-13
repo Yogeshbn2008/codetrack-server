@@ -6,7 +6,8 @@ const problemSchema = new mongoose.Schema({
   topic: { type: String },
   difficulty: { type: String, default: "Easy" },
   status: { type: String, default: "attempted" },
-  notes: { type: String }
+  notes: { type: String },
+  userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true }
 }, { timestamps: true })
 
 const Problem = mongoose.model('Problem', problemSchema)
