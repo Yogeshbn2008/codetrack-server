@@ -2,6 +2,7 @@ require('dotenv').config()
 const express = require('express')
 const cors = require('cors')
 const mongoose = require('mongoose')
+const axios = require('axios')
 const Problem = require('./models/Problem')
 const authRoutes = require('./routes/auth')
 const authMiddleware = require('./middleware/auth')
@@ -26,34 +27,79 @@ app.get('/', (req, res) => {
 // All routes below this line require a valid token
 app.use('/api/problems', authMiddleware)
 
-app.get('/api/problems', async (req, res) => {
-  const { search, topic, difficulty, status } = req.query
+// Fetch platform + title from a pasted problem link
+app.post('/api/problems/fetch-meta', async (req, res) => {
+  const { link } = req.body
+  if (!link) return res.status(400).json({ message: "No link provided" })
 
-  const query = { userId: req.userId }
+  try {
+    const url = new URL(link)
+    const hostname = url.hostname.replace('www.', '')
 
-  if (search) {
-    query.title = { $regex: search, $options: 'i' }
-  }
-  if (topic) {
-    query.topic = topic
-  }
-  if (difficulty) {
-    query.difficulty = difficulty
-  }
-  if (status) {
-    query.status = status
-  }
+    // Special handling: LeetCode blocks simple scraping, so use their public GraphQL API instead
+    if (hostname === 'leetcode.com') {
+      const slugMatch = url.pathname.match(/\/problems\/([^/]+)/)
+      if (!slugMatch) {
+        return res.status(400).json({ message: "Couldn't parse the LeetCode problem slug from this URL" })
+      }
+      const titleSlug = slugMatch[1]
 
-  const problems = await Problem.find(query)
-  res.json(problems)
+      const graphqlRes = await axios.post(
+        'https://leetcode.com/graphql',
+        {
+          query: `query getQuestion($titleSlug: String!) {
+            question(titleSlug: $titleSlug) {
+              title
+              difficulty
+            }
+          }`,
+          variables: { titleSlug }
+        },
+        { headers: { 'Content-Type': 'application/json' }, timeout: 8000 }
+      )
+
+      const question = graphqlRes.data?.data?.question
+      if (!question) {
+        return res.status(404).json({ message: "Couldn't find that problem on LeetCode" })
+      }
+
+      return res.json({ title: question.title, platform: 'LeetCode', difficulty: question.difficulty })
+    }
+
+    // Generic fallback for other platforms: scrape the page title
+    const platformMap = {
+      'codeforces.com': 'Codeforces',
+      'geeksforgeeks.org': 'GeeksforGeeks',
+      'hackerrank.com': 'HackerRank',
+      'interviewbit.com': 'InterviewBit',
+      'codechef.com': 'CodeChef',
+      'atcoder.jp': 'AtCoder'
+    }
+    const platform = platformMap[hostname] || hostname
+
+    const response = await axios.get(link, {
+      headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' },
+      timeout: 8000
+    })
+
+    const match = response.data.match(/<title[^>]*>([^<]*)<\/title>/i)
+    let title = match ? match[1].trim() : ""
+
+    title = title
+      .replace(/\s*-\s*GeeksforGeeks\s*$/i, '')
+      .replace(/\s*\|\s*GeeksforGeeks\s*$/i, '')
+      .replace(/\s*-\s*Codeforces\s*$/i, '')
+      .replace(/\s*-\s*HackerRank\s*$/i, '')
+      .replace(/^\d+\.\s*/, '')
+
+    res.json({ title, platform })
+  } catch (err) {
+    console.error("Fetch-meta error:", err.message)
+    res.status(500).json({ message: "Could not fetch details automatically. Please enter them manually." })
+  }
 })
 
-app.post('/api/problems', async (req, res) => {
-  const newProblem = new Problem({ ...req.body, userId: req.userId })
-  const saved = await newProblem.save()
-  res.status(201).json(saved)
-})
- app.get('/api/problems/stats/summary', async (req, res) => {
+app.get('/api/problems/stats/summary', async (req, res) => {
   const problems = await Problem.find({ userId: req.userId })
 
   const total = problems.length
@@ -72,11 +118,49 @@ app.post('/api/problems', async (req, res) => {
     byTopic[topic] = (byTopic[topic] || 0) + 1
   })
 
+  const byPattern = {}
+  problems.forEach(p => {
+    if (p.pattern) {
+      byPattern[p.pattern] = (byPattern[p.pattern] || 0) + 1
+    }
+  })
+
   const recent = problems
     .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt))
     .slice(0, 5)
 
-  res.json({ total, solved, attempted, byDifficulty, byTopic, recent })
+  res.json({ total, solved, attempted, byDifficulty, byTopic, byPattern, recent })
+})
+
+app.get('/api/problems', async (req, res) => {
+  const { search, topic, pattern, difficulty, status } = req.query
+
+  const query = { userId: req.userId }
+
+  if (search) {
+    query.title = { $regex: search, $options: 'i' }
+  }
+  if (topic) {
+    query.topic = topic
+  }
+  if (pattern) {
+    query.pattern = { $regex: `^${pattern}$`, $options: 'i' }
+  }
+  if (difficulty) {
+    query.difficulty = difficulty
+  }
+  if (status) {
+    query.status = status
+  }
+
+  const problems = await Problem.find(query)
+  res.json(problems)
+})
+
+app.post('/api/problems', async (req, res) => {
+  const newProblem = new Problem({ ...req.body, userId: req.userId })
+  const saved = await newProblem.save()
+  res.status(201).json(saved)
 })
 
 app.get('/api/problems/:id', async (req, res) => {
