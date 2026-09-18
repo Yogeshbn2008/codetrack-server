@@ -99,6 +99,57 @@ app.post('/api/problems/fetch-meta', async (req, res) => {
   }
 })
 
+function getDateKey(date) {
+  return new Date(date).toISOString().slice(0, 10)
+}
+
+function computeStreaks(activityDateSet) {
+  const today = new Date()
+  today.setHours(0, 0, 0, 0)
+
+  // Current streak: count backwards from today (or yesterday, if nothing logged today yet)
+  let current = 0
+  let cursor = new Date(today)
+  if (!activityDateSet.has(getDateKey(cursor))) {
+    cursor.setDate(cursor.getDate() - 1)
+  }
+  while (activityDateSet.has(getDateKey(cursor))) {
+    current++
+    cursor.setDate(cursor.getDate() - 1)
+  }
+
+  // Longest streak: scan all logged dates for the best consecutive run
+  const sortedDates = Array.from(activityDateSet).sort()
+  let longest = 0
+  let run = 0
+  let prevDate = null
+  for (const dateStr of sortedDates) {
+    const thisDate = new Date(dateStr)
+    if (prevDate) {
+      const diffDays = Math.round((thisDate - prevDate) / (1000 * 60 * 60 * 24))
+      run = diffDays === 1 ? run + 1 : 1
+    } else {
+      run = 1
+    }
+    longest = Math.max(longest, run)
+    prevDate = thisDate
+  }
+
+  // Last 7 days, oldest to newest, for a Mon-Sun style tick row
+  const last7Days = []
+  for (let i = 6; i >= 0; i--) {
+    const d = new Date(today)
+    d.setDate(d.getDate() - i)
+    last7Days.push({
+      date: getDateKey(d),
+      label: d.toLocaleDateString('en-US', { weekday: 'short' }),
+      active: activityDateSet.has(getDateKey(d))
+    })
+  }
+
+  return { current, longest, last7Days }
+}
+
 app.get('/api/problems/stats/summary', async (req, res) => {
   const problems = await Problem.find({ userId: req.userId })
 
@@ -125,13 +176,15 @@ app.get('/api/problems/stats/summary', async (req, res) => {
     }
   })
 
+  const activityDateSet = new Set(problems.map(p => getDateKey(p.createdAt)))
+  const streak = computeStreaks(activityDateSet)
+
   const recent = problems
     .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt))
     .slice(0, 5)
 
-  res.json({ total, solved, attempted, byDifficulty, byTopic, byPattern, recent })
+  res.json({ total, solved, attempted, byDifficulty, byTopic, byPattern, streak, recent })
 })
-
 app.get('/api/problems', async (req, res) => {
   const { search, topic, pattern, difficulty, status } = req.query
 
