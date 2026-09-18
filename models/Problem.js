@@ -9,6 +9,7 @@ const problemSchema = new mongoose.Schema({
   status: { type: String, default: "attempted" },
   notes: { type: String },
   link: { type: String },
+  imageUrl: { type: String },
   userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true }
 }, { timestamps: true })
 
