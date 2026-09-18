@@ -168,6 +168,28 @@ app.get('/api/problems/stats/summary', async (req, res) => {
     const topic = p.topic || "Uncategorized"
     byTopic[topic] = (byTopic[topic] || 0) + 1
   })
+  // Weak-topic insight: lowest solve rate among topics with at least 2 attempts
+const topicStats = {}
+problems.forEach(p => {
+  const topic = p.topic || "Uncategorized"
+  if (!topicStats[topic]) {
+    topicStats[topic] = { total: 0, solved: 0 }
+  }
+  topicStats[topic].total++
+  if (p.status === "solved") {
+    topicStats[topic].solved++
+  }
+})
+
+let weakTopic = null
+Object.entries(topicStats).forEach(([topic, data]) => {
+  if (data.total >= 2) {
+    const solveRate = data.solved / data.total
+    if (!weakTopic || solveRate < weakTopic.solveRate) {
+      weakTopic = { topic, solveRate, total: data.total, solved: data.solved }
+    }
+  }
+})
 
   const byPattern = {}
   problems.forEach(p => {
@@ -183,7 +205,7 @@ app.get('/api/problems/stats/summary', async (req, res) => {
     .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt))
     .slice(0, 5)
 
-  res.json({ total, solved, attempted, byDifficulty, byTopic, byPattern, streak, recent })
+  res.json({ total, solved, attempted, byDifficulty, byTopic, byPattern, streak,weakTopic, recent })
 })
 app.get('/api/problems', async (req, res) => {
   const { search, topic, pattern, difficulty, status } = req.query
