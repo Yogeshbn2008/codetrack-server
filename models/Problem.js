@@ -10,6 +10,8 @@ const problemSchema = new mongoose.Schema({
   notes: { type: String },
   link: { type: String },
   imageUrl: { type: String },
+  lastRevisedAt: { type: Date, default: Date.now },
+  revisionIntervalDays: { type: Number, default: 7 },
   userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true }
 }, { timestamps: true })
 

@@ -205,10 +205,22 @@ Object.entries(topicStats).forEach(([topic, data]) => {
     .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt))
     .slice(0, 5)
 
-  res.json({ total, solved, attempted, byDifficulty, byTopic, byPattern, streak,weakTopic, recent })
+   const now = new Date()
+   const dueForRevision = problems
+  .filter(p => {
+    const dueDate = new Date(p.lastRevisedAt)
+    dueDate.setDate(dueDate.getDate() + (p.revisionIntervalDays || 7))
+    return dueDate <= now
+  })
+  .sort((a, b) => new Date(a.lastRevisedAt) - new Date(b.lastRevisedAt))
+  .slice(0, 5)
+
+ res.json({ total, solved, attempted, byDifficulty, byTopic, byPattern, streak, weakTopic, dueForRevision, recent })
 })
+
+ 
 app.get('/api/problems', async (req, res) => {
-  const { search, topic, pattern, difficulty, status } = req.query
+  const { search, topic, pattern, difficulty, status, revision } = req.query
 
   const query = { userId: req.userId }
 
@@ -228,7 +240,17 @@ app.get('/api/problems', async (req, res) => {
     query.status = status
   }
 
-  const problems = await Problem.find(query)
+  let problems = await Problem.find(query).sort({ lastRevisedAt: 1 })
+
+  if (revision === "true") {
+    const now = new Date()
+    problems = problems.filter(p => {
+      const dueDate = new Date(p.lastRevisedAt)
+      dueDate.setDate(dueDate.getDate() + (p.revisionIntervalDays || 7))
+      return dueDate <= now
+    })
+  }
+
   res.json(problems)
 })
 
@@ -258,6 +280,16 @@ app.delete('/api/problems/:id', async (req, res) => {
   const deleted = await Problem.findOneAndDelete({ _id: req.params.id, userId: req.userId })
   if (!deleted) return res.status(404).json({ message: "Problem not found" })
   res.status(204).send()
+})
+
+app.patch('/api/problems/:id/revise', async (req, res) => {
+  const updated = await Problem.findOneAndUpdate(
+    { _id: req.params.id, userId: req.userId },
+    { lastRevisedAt: new Date() },
+    { returnDocument: 'after' }
+  )
+  if (!updated) return res.status(404).json({ message: "Problem not found" })
+  res.json(updated)
 })
 
 app.listen(5000, () => {
