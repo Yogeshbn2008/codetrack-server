@@ -254,6 +254,12 @@ app.get('/api/problems', async (req, res) => {
   res.json(problems)
 })
 
+app.get('/api/problems/meta/options', async (req, res) => {
+  const topics = await Problem.distinct('topic', { userId: req.userId, topic: { $nin: [null, ""] } })
+  const patterns = await Problem.distinct('pattern', { userId: req.userId, pattern: { $nin: [null, ""] } })
+  res.json({ topics: topics.sort(), patterns: patterns.sort() })
+})
+
 app.post('/api/problems', async (req, res) => {
   const newProblem = new Problem({ ...req.body, userId: req.userId })
   const saved = await newProblem.save()
