@@ -1,0 +1,329 @@
+const express = require('express')
+const router = express.Router()
+const mongoose = require('mongoose')
+const axios = require('axios')
+const Problem = require('../models/Problem')
+
+// --- Whitelist for SSRF Protection ---
+const ALLOWED_PLATFORMS = new Set([
+  'leetcode.com',
+  'codeforces.com',
+  'geeksforgeeks.org',
+  'hackerrank.com',
+  'interviewbit.com',
+  'codechef.com',
+  'atcoder.jp'
+])
+
+// Helper: Format Date Key (YYYY-MM-DD)
+function getDateKey(date) {
+  return new Date(date).toISOString().slice(0, 10)
+}
+
+// Helper: Compute User Streaks
+function computeStreaks(activityDateSet) {
+  const today = new Date()
+  today.setHours(0, 0, 0, 0)
+
+  let current = 0
+  let cursor = new Date(today)
+  if (!activityDateSet.has(getDateKey(cursor))) {
+    cursor.setDate(cursor.getDate() - 1)
+  }
+  while (activityDateSet.has(getDateKey(cursor))) {
+    current++
+    cursor.setDate(cursor.getDate() - 1)
+  }
+
+  const sortedDates = Array.from(activityDateSet).sort()
+  let longest = 0
+  let run = 0
+  let prevDate = null
+  for (const dateStr of sortedDates) {
+    const thisDate = new Date(dateStr)
+    if (prevDate) {
+      const diffDays = Math.round((thisDate - prevDate) / (1000 * 60 * 60 * 24))
+      run = diffDays === 1 ? run + 1 : 1
+    } else {
+      run = 1
+    }
+    longest = Math.max(longest, run)
+    prevDate = thisDate
+  }
+
+  const last7Days = []
+  for (let i = 6; i >= 0; i--) {
+    const d = new Date(today)
+    d.setDate(d.getDate() - i)
+    last7Days.push({
+      date: getDateKey(d),
+      label: d.toLocaleDateString('en-US', { weekday: 'short' }),
+      active: activityDateSet.has(getDateKey(d))
+    })
+  }
+
+  return { current, longest, last7Days }
+}
+
+// @route   POST /api/problems/fetch-meta
+// @desc    Fetch problem details from URL (SSRF Protected)
+router.post('/fetch-meta', async (req, res) => {
+  const { link } = req.body
+  if (!link) return res.status(400).json({ message: "No link provided" })
+
+  let parsedUrl
+  try {
+    parsedUrl = new URL(link)
+    if (parsedUrl.protocol !== 'https:') {
+      return res.status(400).json({ message: "Only secure HTTPS URLs are permitted" })
+    }
+  } catch (err) {
+    return res.status(400).json({ message: "Invalid URL format" })
+  }
+
+  const hostname = parsedUrl.hostname.replace(/^www\./, '')
+
+  if (!ALLOWED_PLATFORMS.has(hostname)) {
+    return res.status(400).json({ 
+      message: "Unsupported platform. Automatic fetching is only supported for LeetCode, GFG, Codeforces, HackerRank, InterviewBit, and CodeChef." 
+    })
+  }
+
+  try {
+    if (hostname === 'leetcode.com') {
+      const slugMatch = parsedUrl.pathname.match(/\/problems\/([^/]+)/)
+      if (!slugMatch) {
+        return res.status(400).json({ message: "Couldn't parse the LeetCode problem slug from this URL" })
+      }
+      const titleSlug = slugMatch[1]
+
+      const graphqlRes = await axios.post(
+        'https://leetcode.com/graphql',
+        {
+          query: `query getQuestion($titleSlug: String!) {
+            question(titleSlug: $titleSlug) {
+              title
+              difficulty
+            }
+          }`,
+          variables: { titleSlug }
+        },
+        { headers: { 'Content-Type': 'application/json' }, timeout: 8000 }
+      )
+
+      const question = graphqlRes.data?.data?.question
+      if (!question) {
+        return res.status(404).json({ message: "Couldn't find that problem on LeetCode" })
+      }
+
+      return res.json({ title: question.title, platform: 'LeetCode', difficulty: question.difficulty })
+    }
+
+    const platformMap = {
+      'codeforces.com': 'Codeforces',
+      'geeksforgeeks.org': 'GeeksforGeeks',
+      'hackerrank.com': 'HackerRank',
+      'interviewbit.com': 'InterviewBit',
+      'codechef.com': 'CodeChef',
+      'atcoder.jp': 'AtCoder'
+    }
+
+    const response = await axios.get(link, {
+      headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' },
+      timeout: 8000,
+      maxRedirects: 3
+    })
+
+    const match = response.data.match(/<title[^>]*>([^<]*)<\/title>/i)
+    let title = match ? match[1].trim() : ""
+    title = title
+      .replace(/\s*-\s*GeeksforGeeks\s*$/i, '')
+      .replace(/\s*\|\s*GeeksforGeeks\s*$/i, '')
+      .replace(/\s*-\s*Codeforces\s*$/i, '')
+      .replace(/\s*-\s*HackerRank\s*$/i, '')
+      .replace(/^\d+\.\s*/, '')
+
+    res.json({ title, platform: platformMap[hostname] || hostname })
+  } catch (err) {
+    console.error("Fetch-meta error:", err.message)
+    res.status(500).json({ message: "Could not fetch details automatically. Please enter them manually." })
+  }
+})
+
+// @route   GET /api/problems/stats/summary
+// @desc    Dashboard analytics computed via MongoDB Aggregation Pipeline
+router.get('/stats/summary', async (req, res) => {
+  try {
+    const userId = new mongoose.Types.ObjectId(req.userId)
+
+    const [statsResult] = await Problem.aggregate([
+      { $match: { userId } },
+      {
+        $facet: {
+          totalCount: [{ $count: "count" }],
+          byStatus: [
+            { $group: { _id: "$status", count: { $sum: 1 } } }
+          ],
+          byDifficulty: [
+            { $group: { _id: "$difficulty", count: { $sum: 1 } } }
+          ],
+          byTopic: [
+            { $group: { _id: { $ifNull: ["$topic", "Uncategorized"] }, total: { $sum: 1 }, solved: { $sum: { $cond: [{ $eq: ["$status", "solved"] }, 1, 0] } } } }
+          ],
+          byPattern: [
+            { $match: { pattern: { $nin: [null, ""] } } },
+            { $group: { _id: "$pattern", count: { $sum: 1 } } }
+          ],
+          recent: [
+            { $sort: { createdAt: -1 } },
+            { $limit: 5 },
+            { $project: { _id: 1, title: 1, difficulty: 1, status: 1, createdAt: 1 } }
+          ],
+          allProblemsForStreak: [
+            { $project: { createdAt: 1, lastRevisedAt: 1, revisionIntervalDays: 1, title: 1 } }
+          ]
+        }
+      }
+    ])
+
+    const total = statsResult.totalCount[0]?.count || 0
+    const solved = statsResult.byStatus.find(s => s._id === 'solved')?.count || 0
+    const attempted = statsResult.byStatus.find(s => s._id === 'attempted')?.count || 0
+
+    const byDifficulty = { Easy: 0, Medium: 0, Hard: 0 }
+    statsResult.byDifficulty.forEach(d => {
+      if (d._id) byDifficulty[d._id] = d.count
+    })
+
+    const byTopic = {}
+    let weakTopic = null
+    statsResult.byTopic.forEach(t => {
+      byTopic[t._id] = t.total
+      if (t.total >= 2) {
+        const solveRate = t.solved / t.total
+        if (!weakTopic || solveRate < weakTopic.solveRate) {
+          weakTopic = { topic: t._id, solveRate, total: t.total, solved: t.solved }
+        }
+      }
+    })
+
+    const byPattern = {}
+    statsResult.byPattern.forEach(p => {
+      byPattern[p._id] = p.count
+    })
+
+    const allProbs = statsResult.allProblemsForStreak
+    const activityDateSet = new Set(allProbs.map(p => getDateKey(p.createdAt)))
+    const streak = computeStreaks(activityDateSet)
+
+    const now = new Date()
+    const dueForRevision = allProbs
+      .filter(p => {
+        const dueDate = new Date(p.lastRevisedAt)
+        dueDate.setDate(dueDate.getDate() + (p.revisionIntervalDays || 7))
+        return dueDate <= now
+      })
+      .sort((a, b) => new Date(a.lastRevisedAt) - new Date(b.lastRevisedAt))
+      .slice(0, 5)
+
+    res.json({
+      total,
+      solved,
+      attempted,
+      byDifficulty,
+      byTopic,
+      byPattern,
+      streak,
+      weakTopic,
+      dueForRevision,
+      recent: statsResult.recent
+    })
+  } catch (err) {
+    console.error("Aggregation stats error:", err)
+    res.status(500).json({ message: "Error calculating dashboard statistics" })
+  }
+})
+
+// @route   GET /api/problems
+// @desc    Get all problems with filter and search
+router.get('/', async (req, res) => {
+  const { search, topic, pattern, difficulty, status, revision } = req.query
+  const query = { userId: req.userId }
+
+  if (search) query.title = { $regex: search, $options: 'i' }
+  if (topic) query.topic = topic
+  if (pattern) query.pattern = { $regex: `^${pattern}$`, $options: 'i' }
+  if (difficulty) query.difficulty = difficulty
+  if (status) query.status = status
+
+  let problems = await Problem.find(query).sort({ lastRevisedAt: 1 })
+
+  if (revision === "true") {
+    const now = new Date()
+    problems = problems.filter(p => {
+      const dueDate = new Date(p.lastRevisedAt)
+      dueDate.setDate(dueDate.getDate() + (p.revisionIntervalDays || 7))
+      return dueDate <= now
+    })
+  }
+
+  res.json(problems)
+})
+
+// @route   GET /api/problems/meta/options
+// @desc    Get distinct topics and patterns for filters
+router.get('/meta/options', async (req, res) => {
+  const topics = await Problem.distinct('topic', { userId: req.userId, topic: { $nin: [null, ""] } })
+  const patterns = await Problem.distinct('pattern', { userId: req.userId, pattern: { $nin: [null, ""] } })
+  res.json({ topics: topics.sort(), patterns: patterns.sort() })
+})
+
+// @route   POST /api/problems
+// @desc    Create a new problem
+router.post('/', async (req, res) => {
+  const newProblem = new Problem({ ...req.body, userId: req.userId })
+  const saved = await newProblem.save()
+  res.status(201).json(saved)
+})
+
+// @route   GET /api/problems/:id
+// @desc    Get problem by ID
+router.get('/:id', async (req, res) => {
+  const problem = await Problem.findOne({ _id: req.params.id, userId: req.userId })
+  if (!problem) return res.status(404).json({ message: "Problem not found" })
+  res.json(problem)
+})
+
+// @route   PUT /api/problems/:id
+// @desc    Update problem by ID
+router.put('/:id', async (req, res) => {
+  const updated = await Problem.findOneAndUpdate(
+    { _id: req.params.id, userId: req.userId },
+    req.body,
+    { returnDocument: 'after' }
+  )
+  if (!updated) return res.status(404).json({ message: "Problem not found" })
+  res.json(updated)
+})
+
+// @route   DELETE /api/problems/:id
+// @desc    Delete problem by ID
+router.delete('/:id', async (req, res) => {
+  const deleted = await Problem.findOneAndDelete({ _id: req.params.id, userId: req.userId })
+  if (!deleted) return res.status(404).json({ message: "Problem not found" })
+  res.status(204).send()
+})
+
+// @route   PATCH /api/problems/:id/revise
+// @desc    Update problem revision timestamp
+router.patch('/:id/revise', async (req, res) => {
+  const updated = await Problem.findOneAndUpdate(
+    { _id: req.params.id, userId: req.userId },
+    { lastRevisedAt: new Date() },
+    { returnDocument: 'after' }
+  )
+  if (!updated) return res.status(404).json({ message: "Problem not found" })
+  res.json(updated)
+})
+
+module.exports = router
