@@ -6,8 +6,8 @@
 ![Jest](https://img.shields.io/badge/Jest-Testing-C21325?logo=jest&logoColor=white)
 ![Security](https://img.shields.io/badge/Security-Helmet%20%7C%20RateLimit-orange)
 A scalable, secure, and production-grade RESTful API powering the **CodeTrack** technical interview and DSA preparation platform. Built with Node.js, Express, and MongoDB Atlas, with enterprise-level security, database optimizations, and automated CI/CD.
-🌐 **Live Production API:** [https://codetrack-server.onrender.com](https://codetrack-server.onrender.com)  
-🖥️ **Live Web Application:** [https://codetrack-henna.vercel.app](https://codetrack-henna.vercel.app)
+- 🌐 **Live Production API:** [https://codetrack-server.onrender.com](https://codetrack-server.onrender.com)
+- 🖥️ **Live Web Application:** [https://codetrack-henna.vercel.app](https://codetrack-henna.vercel.app)
 ---
 ## 🏛 System Architecture
 ```text
@@ -97,7 +97,5 @@ bash
 
 npm test
 👨‍💻 Author
-Yogesh B N
-
-GitHub: @Yogeshbn2008
-Live Project: codetrack-henna.vercel.app
+GitHub: Yogeshbn2008
+Live Project: https://codetrack-henna.vercel.app
