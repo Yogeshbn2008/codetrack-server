@@ -180,7 +180,7 @@ router.get('/stats/summary', async (req, res) => {
             { $project: { _id: 1, title: 1, difficulty: 1, status: 1, createdAt: 1 } }
           ],
           allProblemsForStreak: [
-            { $project: { createdAt: 1, lastRevisedAt: 1, revisionIntervalDays: 1, title: 1 } }
+            { $project: { createdAt: 1, lastRevisedAt: 1, revisionIntervalDays: 1, revisionCount: 1, easeFactor: 1, title: 1, difficulty: 1, topic: 1, pattern: 1, link: 1 } }
           ]
         }
       }
@@ -315,15 +315,55 @@ router.delete('/:id', async (req, res) => {
 })
 
 // @route   PATCH /api/problems/:id/revise
-// @desc    Update problem revision timestamp
+// @desc    Update problem revision with adaptive SuperMemo-2 (SM-2) algorithm
 router.patch('/:id/revise', async (req, res) => {
-  const updated = await Problem.findOneAndUpdate(
-    { _id: req.params.id, userId: req.userId },
-    { lastRevisedAt: new Date() },
-    { returnDocument: 'after' }
-  )
-  if (!updated) return res.status(404).json({ message: "Problem not found" })
-  res.json(updated)
+  const { quality } = req.body // 'again' (1) | 'hard' (2) | 'good' (3) | 'easy' (4)
+
+  const problem = await Problem.findOne({ _id: req.params.id, userId: req.userId })
+  if (!problem) return res.status(404).json({ message: "Problem not found" })
+
+  let currentInterval = problem.revisionIntervalDays || 7
+  let easeFactor = problem.easeFactor || 2.5
+  let revisionCount = (problem.revisionCount || 0) + 1
+
+  if (!quality) {
+    // Backward-compatible fallback
+    problem.lastRevisedAt = new Date()
+    problem.revisionCount = revisionCount
+    await problem.save()
+    return res.json(problem)
+  }
+
+  const q = String(quality).toLowerCase()
+  let nextInterval = currentInterval
+
+  switch (q) {
+    case 'again':
+      nextInterval = 1
+      easeFactor = Math.max(1.3, easeFactor - 0.2)
+      break
+    case 'hard':
+      nextInterval = Math.max(2, Math.round(currentInterval * 1.2))
+      easeFactor = Math.max(1.3, easeFactor - 0.15)
+      break
+    case 'good':
+      nextInterval = Math.max(3, Math.round(currentInterval * easeFactor))
+      break
+    case 'easy':
+      nextInterval = Math.max(5, Math.round(currentInterval * easeFactor * 1.3))
+      easeFactor = Math.min(3.5, easeFactor + 0.15)
+      break
+    default:
+      nextInterval = currentInterval
+  }
+
+  problem.lastRevisedAt = new Date()
+  problem.revisionIntervalDays = nextInterval
+  problem.easeFactor = Number(easeFactor.toFixed(2))
+  problem.revisionCount = revisionCount
+
+  await problem.save()
+  res.json(problem)
 })
 
 module.exports = router

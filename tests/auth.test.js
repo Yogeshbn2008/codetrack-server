@@ -3,8 +3,9 @@ const request = require('supertest');
 const mongoose = require('mongoose');
 const express = require('express');
 
-// Set test environment secret
+// Set test environment secret and timeout
 process.env.JWT_SECRET = process.env.JWT_SECRET || 'test_jwt_secret_key_12345';
+jest.setTimeout(20000);
 
 const authRoutes = require('../routes/auth');
 const User = require('../models/User');

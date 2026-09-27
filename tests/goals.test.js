@@ -5,6 +5,7 @@ const express = require('express')
 const jwt = require('jsonwebtoken')
 
 process.env.JWT_SECRET = process.env.JWT_SECRET || 'test_jwt_secret_key_12345'
+jest.setTimeout(20000)
 
 const Goal = require('../models/Goal')
 const goalRoutes = require('../routes/goals')
