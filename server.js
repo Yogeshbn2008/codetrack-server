@@ -19,8 +19,21 @@ app.set('trust proxy', 1)
 app.use(helmet())
 
 // 3. CORS Configuration
+const allowedOrigins = [
+  'http://localhost:5173',
+  'https://codetrack-henna.vercel.app'
+]
+
 app.use(cors({
-  origin: ['http://localhost:5173', 'https://codetrack-henna.vercel.app']
+  origin: (origin, callback) => {
+    // Allow requests with no origin (like mobile/curl) or allowed web origins or chrome-extension://
+    if (!origin || allowedOrigins.includes(origin) || origin.startsWith('chrome-extension://')) {
+      callback(null, true)
+    } else {
+      callback(new Error('Not allowed by CORS'))
+    }
+  },
+  credentials: true
 }))
 app.use(express.json())
 
