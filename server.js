@@ -7,6 +7,7 @@ const rateLimit = require('express-rate-limit')
 
 const authRoutes = require('./routes/auth')
 const problemRoutes = require('./routes/problems')
+const goalRoutes = require('./routes/goals')
 const authMiddleware = require('./middleware/auth')
 
 const app = express()
@@ -52,6 +53,7 @@ app.get('/', (req, res) => {
 // 7. Application Routes
 app.use('/api/auth', authRoutes)
 app.use('/api/problems', authMiddleware, problemRoutes)
+app.use('/api/goals', authMiddleware, goalRoutes)
 
 // 8. 404 Handler for undefined routes
 app.use((req, res) => {
