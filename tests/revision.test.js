@@ -123,4 +123,32 @@ describe('Adaptive Spaced Repetition (SM-2) Integration Tests', () => {
     expect(res.body.revisionIntervalDays).toBe(7)
     expect(res.body.revisionCount).toBe(1)
   })
+
+  it('should return activityHeatmap and retentionGraph in /stats/summary', async () => {
+    await Problem.create({
+      userId: testUserId,
+      title: 'Valid Palindrome',
+      difficulty: 'Easy',
+      topic: 'Two Pointers',
+      status: 'solved',
+      revisionIntervalDays: 7,
+      easeFactor: 2.5,
+      revisionCount: 1,
+      createdAt: new Date(),
+      lastRevisedAt: new Date()
+    })
+
+    const res = await request(app)
+      .get('/api/problems/stats/summary')
+      .set('Authorization', `Bearer ${token}`)
+
+    expect(res.statusCode).toBe(200)
+    expect(res.body.activityHeatmap).toBeDefined()
+    expect(res.body.activityHeatmap.totalYearSubmissions).toBeGreaterThanOrEqual(1)
+    expect(res.body.retentionGraph).toBeDefined()
+    expect(res.body.retentionGraph.totalTracked).toBe(1)
+    expect(res.body.retentionGraph.retentionProblems[0].retention).toBeGreaterThanOrEqual(95)
+    expect(res.body.retentionGraph.retentionProblems[0].status).toBe('high')
+  })
 })
+

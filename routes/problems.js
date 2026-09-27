@@ -159,6 +159,116 @@ function computeReadinessScore(allProbs = [], streak = { current: 0 }, byDifficu
   }
 }
 
+// Helper: Compute 365-Day Activity Heatmap Data
+function computeActivityHeatmap(allProbs = []) {
+  const heatmap = {}
+  const now = new Date()
+  const oneYearAgo = new Date(now)
+  oneYearAgo.setDate(oneYearAgo.getDate() - 365)
+  oneYearAgo.setHours(0, 0, 0, 0)
+
+  let totalYearSubmissions = 0
+  const activityDateSet = new Set()
+
+  allProbs.forEach(p => {
+    if (p.createdAt) {
+      const cDate = new Date(p.createdAt)
+      const cKey = getDateKey(cDate)
+      activityDateSet.add(cKey)
+      if (cDate >= oneYearAgo) {
+        heatmap[cKey] = (heatmap[cKey] || 0) + 1
+        totalYearSubmissions++
+      }
+    }
+    if (p.lastRevisedAt && (p.revisionCount || 0) > 0) {
+      const rDate = new Date(p.lastRevisedAt)
+      const rKey = getDateKey(rDate)
+      activityDateSet.add(rKey)
+      if (rDate >= oneYearAgo) {
+        heatmap[rKey] = (heatmap[rKey] || 0) + 1
+        totalYearSubmissions++
+      }
+    }
+  })
+
+  return {
+    heatmap,
+    totalYearSubmissions,
+    activeDaysCount: Object.keys(heatmap).length,
+    activityDateSet
+  }
+}
+
+// Helper: Compute Ebbinghaus Forgetting Curve & Retention Metrics
+function computeRetentionGraph(allProbs = []) {
+  const now = new Date()
+  let highCount = 0
+  let fadingCount = 0
+  let criticalCount = 0
+  let totalRetentionSum = 0
+  let totalStabilitySum = 0
+
+  const retentionProblems = allProbs.map(p => {
+    const lastDate = new Date(p.lastRevisedAt || p.createdAt || now)
+    const diffMs = Math.max(0, now - lastDate)
+    const daysElapsed = Number((diffMs / (1000 * 60 * 60 * 24)).toFixed(1))
+
+    const interval = p.revisionIntervalDays || 7
+    const ease = p.easeFactor || 2.5
+    // Stability S represents memory half-life in days
+    const stability = Math.max(1, Number((interval * (ease / 2.5)).toFixed(1)))
+
+    // Ebbinghaus Retention formula: R(t) = e^(-t / (S * 1.5))
+    const rawR = Math.exp(-daysElapsed / (stability * 1.5)) * 100
+    const retention = Math.min(100, Math.max(5, Math.round(rawR)))
+
+    let status = 'high'
+    if (retention < 50) {
+      status = 'critical'
+      criticalCount++
+    } else if (retention < 75) {
+      status = 'fading'
+      fadingCount++
+    } else {
+      highCount++
+    }
+
+    totalRetentionSum += retention
+    totalStabilitySum += stability
+
+    return {
+      _id: p._id,
+      title: p.title,
+      difficulty: p.difficulty || 'Easy',
+      topic: p.topic || 'General',
+      pattern: p.pattern || '',
+      link: p.link || '',
+      daysElapsed,
+      interval,
+      easeFactor: ease,
+      stability,
+      retention,
+      status,
+      revisionCount: p.revisionCount || 0,
+      lastRevisedAt: p.lastRevisedAt || p.createdAt
+    }
+  })
+
+  const count = retentionProblems.length
+  const overallRetentionScore = count > 0 ? Math.round(totalRetentionSum / count) : 100
+  const avgStability = count > 0 ? Number((totalStabilitySum / count).toFixed(1)) : 7.0
+
+  return {
+    overallRetentionScore,
+    avgStability,
+    highCount,
+    fadingCount,
+    criticalCount,
+    totalTracked: count,
+    retentionProblems
+  }
+}
+
 // @route   POST /api/problems/fetch-meta
 // @desc    Fetch problem details from URL (SSRF Protected)
 router.post('/fetch-meta', async (req, res) => {
@@ -307,8 +417,9 @@ router.get('/stats/summary', async (req, res) => {
     })
 
     const allProbs = statsResult.allProblemsForStreak
-    const activityDateSet = new Set(allProbs.map(p => getDateKey(p.createdAt)))
+    const { heatmap, totalYearSubmissions, activeDaysCount, activityDateSet } = computeActivityHeatmap(allProbs)
     const streak = computeStreaks(activityDateSet)
+    const retentionGraph = computeRetentionGraph(allProbs)
 
     const now = new Date()
     const dueForRevision = allProbs
@@ -333,7 +444,13 @@ router.get('/stats/summary', async (req, res) => {
       weakTopic,
       dueForRevision,
       recent: statsResult.recent,
-      readiness
+      readiness,
+      activityHeatmap: {
+        heatmap,
+        totalYearSubmissions,
+        activeDaysCount
+      },
+      retentionGraph
     })
   } catch (err) {
     console.error("Aggregation stats error:", err)
