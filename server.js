@@ -8,6 +8,7 @@ const rateLimit = require('express-rate-limit')
 const authRoutes = require('./routes/auth')
 const problemRoutes = require('./routes/problems')
 const goalRoutes = require('./routes/goals')
+const aiRoutes = require('./routes/ai')
 const authMiddleware = require('./middleware/auth')
 
 const app = express()
@@ -53,6 +54,13 @@ const authLimiter = rateLimit({
 app.use('/api/auth/login', authLimiter)
 app.use('/api/auth/register', authLimiter)
 
+const aiLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 50, // 50 requests per 15 min
+  message: { message: "Too many AI requests. Please wait a few minutes." }
+})
+app.use('/api/ai', aiLimiter)
+
 // 5. Database Connection
 mongoose.connect(process.env.MONGO_URI)
   .then(() => console.log('MongoDB connected'))
@@ -67,6 +75,7 @@ app.get('/', (req, res) => {
 app.use('/api/auth', authRoutes)
 app.use('/api/problems', authMiddleware, problemRoutes)
 app.use('/api/goals', authMiddleware, goalRoutes)
+app.use('/api/ai', authMiddleware, aiRoutes)
 
 // 8. 404 Handler for undefined routes
 app.use((req, res) => {
