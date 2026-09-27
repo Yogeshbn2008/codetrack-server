@@ -3,6 +3,7 @@ const router = express.Router()
 const mongoose = require('mongoose')
 const axios = require('axios')
 const Problem = require('../models/Problem')
+const User = require('../models/User')
 
 // --- Whitelist for SSRF Protection ---
 const ALLOWED_PLATFORMS = new Set([
@@ -63,6 +64,99 @@ function computeStreaks(activityDateSet) {
   }
 
   return { current, longest, last7Days }
+}
+
+// Helper: Compute 0-100 DSA Interview Readiness Score
+function computeReadinessScore(allProbs = [], streak = { current: 0 }, byDifficulty = {}, byTopic = {}) {
+  // 1. Difficulty-weighted volume (Max 35 pts)
+  // Easy = 0.5 pts, Medium = 2.5 pts, Hard = 5.0 pts
+  const easy = byDifficulty.Easy || 0
+  const medium = byDifficulty.Medium || 0
+  const hard = byDifficulty.Hard || 0
+  const rawVolumeScore = (easy * 0.5) + (medium * 2.5) + (hard * 5.0)
+  const volumeScore = Math.min(35, Math.round(rawVolumeScore))
+
+  // 2. Core Topic & High-Frequency Pattern Breadth (Max 35 pts) - 7 pillars x 5 pts
+  const CORE_PILLARS = [
+    { name: "Arrays & Hashing", match: /array|string|hash|map/i },
+    { name: "Two Pointers & Sliding Window", match: /pointer|sliding|window/i },
+    { name: "Stack & Queue", match: /stack|queue|monotonic|heap|priority/i },
+    { name: "Binary Search & Sorting", match: /binary\s*search|search|sort/i },
+    { name: "Trees & BST", match: /tree|bst|trie/i },
+    { name: "Graphs & Traversal", match: /graph|bfs|dfs|matrix|island|union/i },
+    { name: "Dynamic Programming", match: /dp|dynamic|recursion|backtrack/i }
+  ]
+
+  let topicScore = 0
+  const topicPillars = []
+  CORE_PILLARS.forEach(pillar => {
+    let count = 0
+    allProbs.forEach(p => {
+      const topicStr = `${p.topic || ""} ${p.pattern || ""}`
+      if (pillar.match.test(topicStr)) count++
+    })
+    const covered = count >= 2
+    if (covered) topicScore += 5
+    else if (count === 1) topicScore += 2.5
+
+    topicPillars.push({
+      pillar: pillar.name,
+      count,
+      status: count >= 2 ? "Mastered" : count === 1 ? "Practiced" : "Needed"
+    })
+  })
+  topicScore = Math.min(35, Math.round(topicScore))
+
+  // 3. Spaced Repetition Consistency & Retention (Max 30 pts)
+  const streakPts = streak.current >= 7 ? 10 : streak.current >= 3 ? 6 : streak.current >= 1 ? 3 : 0
+  const totalRevisions = allProbs.reduce((acc, p) => acc + (p.revisionCount || 0), 0)
+  const revisionPts = totalRevisions >= 8 ? 10 : totalRevisions >= 4 ? 7 : totalRevisions >= 1 ? 4 : 0
+  const avgEase = allProbs.length > 0
+    ? (allProbs.reduce((acc, p) => acc + (p.easeFactor || 2.5), 0) / allProbs.length)
+    : 2.5
+  const easePts = avgEase >= 2.6 ? 10 : avgEase >= 2.2 ? 7 : 4
+
+  const retentionScore = Math.min(30, streakPts + revisionPts + easePts)
+  const totalScore = Math.min(100, Math.max(0, volumeScore + topicScore + retentionScore))
+
+  let tier = "Developing Core"
+  let tierLevel = "Level 1"
+  let tierColor = "#94a3b8"
+  let recommendation = "Build initial momentum with Arrays, Two Pointers, and maintaining a 3-day streak."
+
+  if (totalScore >= 85) {
+    tier = "FAANG Ready"
+    tierLevel = "Level 4 (Elite)"
+    tierColor = "#a855f7"
+    recommendation = "Maintain your spaced repetition intervals and practice timed Hard problems."
+  } else if (totalScore >= 70) {
+    tier = "Interview Competitive"
+    tierLevel = "Level 3 (Advanced)"
+    tierColor = "#10b981"
+    recommendation = "Target Graphs and Hard Dynamic Programming to push into Elite tier."
+  } else if (totalScore >= 50) {
+    tier = "Solid Foundation"
+    tierLevel = "Level 2 (Intermediate)"
+    tierColor = "#f59e0b"
+    recommendation = "Increase Medium problem volume and focus on Sliding Window and Trees."
+  }
+
+  return {
+    score: totalScore,
+    tier,
+    tierLevel,
+    tierColor,
+    recommendation,
+    breakdown: {
+      volumeScore,
+      maxVolume: 35,
+      topicScore,
+      maxTopic: 35,
+      retentionScore,
+      maxRetention: 30
+    },
+    topicPillars
+  }
 }
 
 // @route   POST /api/problems/fetch-meta
@@ -226,6 +320,8 @@ router.get('/stats/summary', async (req, res) => {
       .sort((a, b) => new Date(a.lastRevisedAt) - new Date(b.lastRevisedAt))
       .slice(0, 5)
 
+    const readiness = computeReadinessScore(allProbs, streak, byDifficulty, byTopic)
+
     res.json({
       total,
       solved,
@@ -236,11 +332,87 @@ router.get('/stats/summary', async (req, res) => {
       streak,
       weakTopic,
       dueForRevision,
-      recent: statsResult.recent
+      recent: statsResult.recent,
+      readiness
     })
   } catch (err) {
     console.error("Aggregation stats error:", err)
     res.status(500).json({ message: "Error calculating dashboard statistics" })
+  }
+})
+
+// @route   GET /api/problems/portfolio
+// @desc    Export aggregated portfolio data for 1-click PDF Generation
+router.get('/portfolio', async (req, res) => {
+  try {
+    const user = await User.findById(req.userId).select('name email createdAt')
+    if (!user) return res.status(404).json({ message: "User not found" })
+
+    const problems = await Problem.find({ userId: req.userId }).sort({ createdAt: -1 })
+
+    const total = problems.length
+    const solved = problems.filter(p => p.status === 'solved').length
+    const byDifficulty = { Easy: 0, Medium: 0, Hard: 0 }
+    problems.forEach(p => {
+      if (p.difficulty && byDifficulty[p.difficulty] !== undefined) {
+        byDifficulty[p.difficulty]++
+      }
+    })
+
+    const byTopic = {}
+    problems.forEach(p => {
+      const top = p.topic || 'Uncategorized'
+      byTopic[top] = (byTopic[top] || 0) + 1
+    })
+
+    const byPattern = {}
+    problems.forEach(p => {
+      if (p.pattern) {
+        byPattern[p.pattern] = (byPattern[p.pattern] || 0) + 1
+      }
+    })
+
+    const activityDateSet = new Set(problems.map(p => getDateKey(p.createdAt)))
+    const streak = computeStreaks(activityDateSet)
+    const readiness = computeReadinessScore(problems, streak, byDifficulty, byTopic)
+
+    // Highlight top solved Medium & Hard problems (with notes or key insights)
+    const keyProblems = problems
+      .filter(p => p.status === 'solved')
+      .slice(0, 10)
+      .map(p => ({
+        id: p._id,
+        title: p.title,
+        difficulty: p.difficulty,
+        topic: p.topic || 'Algorithms',
+        pattern: p.pattern || '',
+        notes: p.notes || '',
+        link: p.link || '',
+        solvedAt: p.createdAt
+      }))
+
+    res.json({
+      candidate: {
+        name: user.name,
+        email: user.email,
+        memberSince: user.createdAt
+      },
+      readiness,
+      stats: {
+        total,
+        solved,
+        attempted: total - solved,
+        byDifficulty,
+        byTopic,
+        byPattern,
+        streak
+      },
+      keyProblems,
+      generatedAt: new Date()
+    })
+  } catch (err) {
+    console.error("Portfolio export error:", err)
+    res.status(500).json({ message: "Error generating portfolio data" })
   }
 })
 
